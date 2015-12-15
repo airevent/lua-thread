@@ -15,8 +15,6 @@ LUAMOD_API int luaopen_thread( lua_State *L ) {
 // arg#2 - table - meta args
 // arg#3 - table - meta keys to copy
 static int lua_thread_start( lua_State *L ) {
-    int type;
-
     lua_ud_thread *thread = (lua_ud_thread *)lua_newuserdata(L, sizeof(lua_ud_thread));
 
     if ( !thread ) {
@@ -43,12 +41,24 @@ static int lua_thread_start( lua_State *L ) {
 
     // meta args
     lua_newtable(thread->L);
+
+    if ( lua_istable(L, 2) ) {
+        lua_pushnil(L);
+
+        while ( lua_next(L, 2) != 0 ) {
+            lua_thread_xcopy(L, thread->L);
+            lua_pop(L, 1);
+        }
+    }
+
     lua_setfield(thread->L, LUA_REGISTRYINDEX, LUA_THREAD_ARGS_METAFIELD);
     //
 
     // meta keys to copy
+    int type;
     if ( lua_istable(L, 3) ) {
         lua_pushnil(L);
+
         while ( lua_next(L, 3) != 0 ) {
             type = lua_getfield(L, LUA_REGISTRYINDEX, lua_tostring(L, -1));
 
@@ -57,7 +67,7 @@ static int lua_thread_start( lua_State *L ) {
                 lua_setfield(thread->L, LUA_REGISTRYINDEX, lua_tostring(L, -2));
             }
 
-            lua_pop(L, 2);
+            lua_pop(L, 2); // +1 for lua_next, +1 for lua_getfield(registry)
         }
     }
     //
@@ -65,7 +75,9 @@ static int lua_thread_start( lua_State *L ) {
 printf("pp: %p\n", lua_thread_create_worker(L));
 
     luaL_setmetatable(L, LUA_MT_THREAD);
+
     lua_pushnumber(L, thread->id);
+
     return 2;
 }
 
@@ -127,4 +139,19 @@ static int lua_thread_atpanic( lua_State *L ) {
     lua_getfield(L, LUA_REGISTRYINDEX, LUA_THREAD_ID_METAFIELD);
     fprintf(stderr, "lua thread #%zu: PANIC: %s\n", (size_t)lua_tonumber(L, -1), lua_tostring(L, -2));
     return 0;
+}
+
+// fromL: arg#-1 - value, arg#-2 - key
+// toL: arg#-1 - table to copy to
+static void lua_thread_xcopy( lua_State *fromL, lua_State *toL ) {
+    /*int type; // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
+
+    // copy key
+    type = lua_type(fromL, -2);
+
+    if ( type==LUA_TNUMBER ) {
+        lua_pushnumber(toL, lua_tonumber(fromL, -2));
+    }
+
+    lua_type(fromL, -1);*/
 }

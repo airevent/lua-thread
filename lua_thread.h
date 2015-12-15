@@ -2,8 +2,8 @@
 
 #include <pthread.h>
 
-#include "lualib.h"
 #include "lua_pd.h"
+#include "lualib.h"
 
 //
 
@@ -40,6 +40,7 @@ static int lua_thread_gc( lua_State *L );
 static uint64_t inc_id( void );
 static void *lua_thread_create_worker( void *arg );
 static int lua_thread_atpanic( lua_State *L );
+static void lua_thread_xcopy( lua_State *fromL, lua_State *toL );
 
 //
 
