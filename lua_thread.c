@@ -15,6 +15,8 @@ LUAMOD_API int luaopen_thread( lua_State *L ) {
 // arg#2 - table - meta args
 // arg#3 - table - meta keys to copy
 static int lua_thread_start( lua_State *L ) {
+    int r;
+
     luaL_checkstring(L, 1);
 
     lua_ud_thread *thread = (lua_ud_thread *)lua_newuserdata(L, sizeof(lua_ud_thread));
@@ -23,13 +25,20 @@ static int lua_thread_start( lua_State *L ) {
         lua_fail(L, "lua_ud_thread alloc failed", 0);
     }
 
+    r = pthread_mutex_init(&thread->mutex, NULL);
+
+    if ( r != 0 ) {
+        lua_fail(L, "pthread_mutex_init failed", r);
+    }
+
     thread->L = luaL_newstate();
 
     if ( !thread->L ) {
+        pthread_mutex_destroy(&thread->mutex);
         lua_fail(L, "luaL_newstate alloc failed", 0);
     }
 
-    thread->detached = 0;
+    thread->dead = 1; // not alive yet
     thread->id = inc_id();
 
     // meta id
@@ -41,9 +50,8 @@ static int lua_thread_start( lua_State *L ) {
 
     luaL_openlibs(thread->L);
 
-    // meta args
+    // meta args - only flat table with basic types - example - { lol="wtf", asd=123 }
     lua_newtable(thread->L);
-
     if ( lua_istable(L, 2) ) {
         lua_pushnil(L);
 
@@ -52,19 +60,15 @@ static int lua_thread_start( lua_State *L ) {
             lua_pop(L, 1);
         }
     }
-
     lua_setfield(thread->L, LUA_REGISTRYINDEX, LUA_THREAD_ARGS_METAFIELD);
     //
 
-    // meta keys to copy
-    int type;
+    // meta keys to copy - example - { "_zmq_ctx" }
     if ( lua_istable(L, 3) ) {
         lua_pushnil(L);
-
         while ( lua_next(L, 3) != 0 ) {
-            type = lua_getfield(L, LUA_REGISTRYINDEX, lua_tostring(L, -1));
-
-            if ( type==LUA_TLIGHTUSERDATA ) {
+            r = lua_getfield(L, LUA_REGISTRYINDEX, lua_tostring(L, -1));
+            if ( r==LUA_TLIGHTUSERDATA ) {
                 lua_pushlightuserdata(thread->L, lua_touserdata(L, -1));
                 lua_setfield(thread->L, LUA_REGISTRYINDEX, lua_tostring(L, -2));
             }
@@ -86,40 +90,21 @@ static int lua_thread_start( lua_State *L ) {
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
-    int r = pthread_create(&thread->thread, &attr, lua_thread_create_worker, thread);
+    r = pthread_create(&thread->thread, &attr, lua_thread_create_worker, thread);
 
     pthread_attr_destroy(&attr);
 
     if ( r != 0 ) {
-        thread->detached = 1;
         lua_fail(L, "thread creation failed", r);
+    } else {
+        pthread_mutex_lock(&thread->mutex);
+        thread->dead = 0;
+        pthread_mutex_unlock(&thread->mutex);
     }
 
     lua_pushnumber(L, thread->id);
 
     return 2;
-}
-
-static int lua_thread_stop( lua_State *L ) {
-    lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
-
-    lua_thread_detach(thread);
-    pthread_cancel(thread->thread);
-
-    return 0;
-}
-
-static int lua_thread_join( lua_State *L ) {
-    lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
-
-    int r = pthread_join(thread->thread, NULL);
-
-    if ( r != 0 ) {
-        lua_fail(L, "thread join failed", r);
-    }
-
-    lua_pushboolean(L, 1);
-    return 1;
 }
 
 static int lua_thread_get_id( lua_State *L ) {
@@ -132,20 +117,53 @@ static int lua_thread_get_args( lua_State *L ) {
     return 1;
 }
 
-static int lua_thread_set_cancel_point( lua_State *L ) {
-    pthread_testcancel();
-    return 0;
+//
+
+static int lua_thread_stop( lua_State *L ) {
+    lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
+
+    pthread_mutex_lock(&thread->mutex);
+    if ( !thread->dead ) {
+        thread->dead = 1;
+        pthread_detach(thread->thread);
+        pthread_cancel(thread->thread);
+    }
+    pthread_mutex_unlock(&thread->mutex);
+
+    lua_settop(L, 1);
+    return 1;
+}
+
+static int lua_thread_join( lua_State *L ) {
+    lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
+
+    pthread_mutex_lock(&thread->mutex);
+    if ( !thread->dead ) {
+        thread->dead = 1;
+        pthread_join(thread->thread, NULL);
+    }
+    pthread_mutex_unlock(&thread->mutex);
+
+    lua_settop(L, 1);
+    return 1;
 }
 
 static int lua_thread_gc( lua_State *L ) {
     lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
 
     if ( thread->L ) {
-        lua_close(thread->L);
+        pthread_mutex_lock(&thread->mutex);
+        if ( !thread->dead ) {
+            thread->dead = 1;
+            pthread_join(thread->thread, NULL);
+        }
+        pthread_mutex_unlock(&thread->mutex);
+
+        pthread_mutex_destroy(&thread->mutex);
+
+        //lua_close(thread->L);
         thread->L = NULL;
     }
-
-    lua_thread_detach(thread);
 
     return 0;
 }
@@ -158,15 +176,13 @@ static uint64_t inc_id( void ) {
 }
 
 static void *lua_thread_create_worker( void *arg ) {
+    int r;
+
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 
     lua_ud_thread *thread = (lua_ud_thread *)arg;
     lua_State *L = thread->L;
-
-    lua_thread_set_cancel_point(L);
-
-    int r;
 
     r = luaL_loadfilex(L, lua_tostring(L, 1), "bt");
 
@@ -180,7 +196,7 @@ static void *lua_thread_create_worker( void *arg ) {
         }
     }
 
-    lua_thread_detach(thread);
+    thread->dead = 1;
 
     pthread_exit(NULL);
 }
