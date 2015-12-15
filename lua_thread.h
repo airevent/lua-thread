@@ -12,6 +12,13 @@
 #define LUA_THREAD_ID_METAFIELD "_thread_id"
 #define LUA_THREAD_ARGS_METAFIELD "_thread_args"
 
+#define lua_thread_detach( thread ) { \
+    if ( !thread->detached ) { \
+        thread->detached = 1; \
+        pthread_detach(thread->thread); \
+    } \
+}
+
 //
 
 typedef struct lua_ud_thread {
@@ -41,6 +48,8 @@ static uint64_t inc_id( void );
 static void *lua_thread_create_worker( void *arg );
 static int lua_thread_atpanic( lua_State *L );
 static void lua_thread_xcopy( lua_State *fromL, lua_State *toL );
+static int lua_custom_traceback( lua_State *L );
+static int lua_custom_pcall( lua_State *L, int narg, int nres );
 
 //
 

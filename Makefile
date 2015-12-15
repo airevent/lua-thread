@@ -7,7 +7,7 @@ CC = gcc
 LD = gcc
 CCFLAGS = -c -fPIC -m64 -std=gnu99 -O2 -Wall -Werror
 LDFLAGS = -shared
-INCS = -I/home/pd/inc
+INCS = -I/home/pd/inc -pthread
 LIBS = -L/home/pd/lib -pthread
 
 MAIN_T = $(NAME).so

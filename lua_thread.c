@@ -15,6 +15,8 @@ LUAMOD_API int luaopen_thread( lua_State *L ) {
 // arg#2 - table - meta args
 // arg#3 - table - meta keys to copy
 static int lua_thread_start( lua_State *L ) {
+    luaL_checkstring(L, 1);
+
     lua_ud_thread *thread = (lua_ud_thread *)lua_newuserdata(L, sizeof(lua_ud_thread));
 
     if ( !thread ) {
@@ -72,9 +74,26 @@ static int lua_thread_start( lua_State *L ) {
     }
     //
 
-printf("pp: %p\n", lua_thread_create_worker(L));
+    // push file path at the top of the stack
+    lua_pushstring(thread->L, lua_tostring(L, 1));
+    //
 
     luaL_setmetatable(L, LUA_MT_THREAD);
+
+    //
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
+    int r = pthread_create(&thread->thread, &attr, lua_thread_create_worker, thread);
+
+    pthread_attr_destroy(&attr);
+
+    if ( r != 0 ) {
+        thread->detached = 1;
+        lua_fail(L, "thread creation failed", r);
+    }
 
     lua_pushnumber(L, thread->id);
 
@@ -82,6 +101,11 @@ printf("pp: %p\n", lua_thread_create_worker(L));
 }
 
 static int lua_thread_stop( lua_State *L ) {
+    lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
+
+    lua_thread_detach(thread);
+    pthread_cancel(thread->thread);
+
     return 0;
 }
 
@@ -121,18 +145,44 @@ static int lua_thread_gc( lua_State *L ) {
         thread->L = NULL;
     }
 
+    lua_thread_detach(thread);
+
     return 0;
 }
 
 //
 
 static uint64_t inc_id( void ) {
-    static volatile uint64_t id = 1;
+    static volatile uint64_t id = 0;
     return __sync_add_and_fetch(&id, 1);
 }
 
 static void *lua_thread_create_worker( void *arg ) {
-    return arg;
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+    lua_ud_thread *thread = (lua_ud_thread *)arg;
+    lua_State *L = thread->L;
+
+    lua_thread_set_cancel_point(L);
+
+    int r;
+
+    r = luaL_loadfilex(L, lua_tostring(L, 1), "bt");
+
+    if ( r != LUA_OK ) {
+        lua_thread_atpanic(L);
+    } else {
+        r = lua_custom_pcall(L, 0, 0);
+
+        if ( r != LUA_OK ) {
+            lua_thread_atpanic(L);
+        }
+    }
+
+    lua_thread_detach(thread);
+
+    pthread_exit(NULL);
 }
 
 static int lua_thread_atpanic( lua_State *L ) {
@@ -144,14 +194,62 @@ static int lua_thread_atpanic( lua_State *L ) {
 // fromL: arg#-1 - value, arg#-2 - key
 // toL: arg#-1 - table to copy to
 static void lua_thread_xcopy( lua_State *fromL, lua_State *toL ) {
-    /*int type; // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
+    int type; // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
+
+    size_t len;
+    const char *str;
 
     // copy key
+
     type = lua_type(fromL, -2);
 
     if ( type==LUA_TNUMBER ) {
         lua_pushnumber(toL, lua_tonumber(fromL, -2));
+    } else if ( type==LUA_TBOOLEAN ) {
+        lua_pushboolean(toL, -2);
+    } else if ( type==LUA_TSTRING ) {
+        str = lua_tolstring(fromL, -2, &len);
+        lua_pushlstring(toL, str, len);
+    } else if ( type==LUA_TTABLE ) {
+        lua_newtable(toL);
+    } else {
+        return;
     }
 
-    lua_type(fromL, -1);*/
+    // copy value
+
+    type = lua_type(fromL, -1);
+
+    if ( type==LUA_TNUMBER ) {
+        lua_pushnumber(toL, lua_tonumber(fromL, -1));
+    } else if ( type==LUA_TBOOLEAN ) {
+        lua_pushboolean(toL, -1);
+    } else if ( type==LUA_TSTRING ) {
+        str = lua_tolstring(fromL, -1, &len);
+        lua_pushlstring(toL, str, len);
+    } else if ( type==LUA_TTABLE ) {
+        lua_newtable(toL);
+    } else {
+        lua_pop(toL, 1);
+        return;
+    }
+
+    lua_settable(toL, -3);
+}
+
+static int lua_custom_traceback( lua_State *L ) {
+    const char *msg = lua_tostring(L, 1);
+    if ( msg ) {
+        luaL_traceback(L, L, msg, 1);
+    }
+    return 1;
+}
+
+static int lua_custom_pcall( lua_State *L, int narg, int nres ) {
+    int base = lua_gettop(L) - narg; // traceback index
+    lua_pushcfunction(L, lua_custom_traceback);
+    lua_insert(L, base);
+    int r = lua_pcall(L, narg, nres, base);
+    lua_remove(L, base);
+    return r;
 }
