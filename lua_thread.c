@@ -25,43 +25,32 @@ static int lua_thread_start( lua_State *L ) {
         lua_fail(L, "lua_ud_thread alloc failed", 0);
     }
 
-    r = pthread_mutex_init(&thread->mutex, NULL);
-
-    if ( r != 0 ) {
-        lua_fail(L, "pthread_mutex_init failed", r);
-    }
-
     thread->L = luaL_newstate();
 
     if ( !thread->L ) {
-        pthread_mutex_destroy(&thread->mutex);
         lua_fail(L, "luaL_newstate alloc failed", 0);
     }
 
-    thread->dead = 1; // not alive yet
     thread->id = inc_id();
+    thread->state = LUA_THREAD_STATE_RUNNING;
+
+    lua_atpanic(thread->L, lua_thread_atpanic);
+    luaL_openlibs(thread->L);
 
     // meta id
     lua_pushnumber(thread->L, thread->id);
     lua_setfield(thread->L, LUA_REGISTRYINDEX, LUA_THREAD_ID_METAFIELD);
-    //
-
-    lua_atpanic(thread->L, lua_thread_atpanic);
-
-    luaL_openlibs(thread->L);
 
     // meta args - only flat table with basic types - example - { lol="wtf", asd=123 }
     lua_newtable(thread->L);
     if ( lua_istable(L, 2) ) {
         lua_pushnil(L);
-
         while ( lua_next(L, 2) != 0 ) {
             lua_thread_xcopy(L, thread->L);
             lua_pop(L, 1);
         }
     }
     lua_setfield(thread->L, LUA_REGISTRYINDEX, LUA_THREAD_ARGS_METAFIELD);
-    //
 
     // meta keys to copy - example - { "_zmq_ctx" }
     if ( lua_istable(L, 3) ) {
@@ -76,13 +65,9 @@ static int lua_thread_start( lua_State *L ) {
             lua_pop(L, 2); // +1 for lua_next, +1 for lua_getfield(registry)
         }
     }
-    //
 
     // push file path at the top of the stack
     lua_pushstring(thread->L, lua_tostring(L, 1));
-    //
-
-    luaL_setmetatable(L, LUA_MT_THREAD);
 
     //
 
@@ -95,25 +80,24 @@ static int lua_thread_start( lua_State *L ) {
     pthread_attr_destroy(&attr);
 
     if ( r != 0 ) {
+        lua_close(thread->L);
         lua_fail(L, "thread creation failed", r);
-    } else {
-        pthread_mutex_lock(&thread->mutex);
-        thread->dead = 0;
-        pthread_mutex_unlock(&thread->mutex);
     }
+
+    luaL_setmetatable(L, LUA_MT_THREAD);
 
     lua_pushnumber(L, thread->id);
 
     return 2;
 }
 
-static int lua_thread_get_id( lua_State *L ) {
-    lua_getfield(L, LUA_REGISTRYINDEX, LUA_THREAD_ID_METAFIELD);
+static int lua_thread_args( lua_State *L ) {
+    lua_getfield(L, LUA_REGISTRYINDEX, LUA_THREAD_ARGS_METAFIELD);
     return 1;
 }
 
-static int lua_thread_get_args( lua_State *L ) {
-    lua_getfield(L, LUA_REGISTRYINDEX, LUA_THREAD_ARGS_METAFIELD);
+static int lua_thread_id( lua_State *L ) {
+    lua_getfield(L, LUA_REGISTRYINDEX, LUA_THREAD_ID_METAFIELD);
     return 1;
 }
 
@@ -122,13 +106,11 @@ static int lua_thread_get_args( lua_State *L ) {
 static int lua_thread_stop( lua_State *L ) {
     lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
 
-    pthread_mutex_lock(&thread->mutex);
-    if ( !thread->dead ) {
-        thread->dead = 1;
+    if ( __sync_or_and_fetch(&thread->state, 0) == LUA_THREAD_STATE_RUNNING ) {
         pthread_detach(thread->thread);
         pthread_cancel(thread->thread);
+        __sync_bool_compare_and_swap(&thread->state, LUA_THREAD_STATE_RUNNING, LUA_THREAD_STATE_DEAD);
     }
-    pthread_mutex_unlock(&thread->mutex);
 
     lua_settop(L, 1);
     return 1;
@@ -137,12 +119,9 @@ static int lua_thread_stop( lua_State *L ) {
 static int lua_thread_join( lua_State *L ) {
     lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
 
-    pthread_mutex_lock(&thread->mutex);
-    if ( !thread->dead ) {
-        thread->dead = 1;
+    if ( __sync_or_and_fetch(&thread->state, 0) == LUA_THREAD_STATE_RUNNING ) {
         pthread_join(thread->thread, NULL);
     }
-    pthread_mutex_unlock(&thread->mutex);
 
     lua_settop(L, 1);
     return 1;
@@ -151,17 +130,12 @@ static int lua_thread_join( lua_State *L ) {
 static int lua_thread_gc( lua_State *L ) {
     lua_ud_thread *thread = luaL_checkudata(L, 1, LUA_MT_THREAD);
 
+    if ( __sync_or_and_fetch(&thread->state, 0) == LUA_THREAD_STATE_RUNNING ) {
+        pthread_join(thread->thread, NULL);
+    }
+
     if ( thread->L ) {
-        pthread_mutex_lock(&thread->mutex);
-        if ( !thread->dead ) {
-            thread->dead = 1;
-            pthread_join(thread->thread, NULL);
-        }
-        pthread_mutex_unlock(&thread->mutex);
-
-        pthread_mutex_destroy(&thread->mutex);
-
-        //lua_close(thread->L);
+        lua_close(thread->L);
         thread->L = NULL;
     }
 
@@ -196,7 +170,7 @@ static void *lua_thread_create_worker( void *arg ) {
         }
     }
 
-    thread->dead = 1;
+    __sync_bool_compare_and_swap(&thread->state, LUA_THREAD_STATE_RUNNING, LUA_THREAD_STATE_DEAD);
 
     pthread_exit(NULL);
 }
@@ -210,10 +184,9 @@ static int lua_thread_atpanic( lua_State *L ) {
 // fromL: arg#-1 - value, arg#-2 - key
 // toL: arg#-1 - table to copy to
 static void lua_thread_xcopy( lua_State *fromL, lua_State *toL ) {
-    int type; // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
-
-    size_t len;
     const char *str;
+    size_t len;
+    int type; // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
 
     // copy key
 

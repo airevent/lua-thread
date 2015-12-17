@@ -6,7 +6,7 @@ local zmq = require "zmq"
 
 --
 
---print("worker #"..thread.get_id().." started")
+print("worker #"..thread.id().." started")
 
 local ctx = assert(zmq.context())
 
@@ -22,11 +22,11 @@ while true do
     local msg = assert(income:recv())
 
     if msg=="kill" then
-        outcome:send(msg)
+        outcome:send(msg.."!")
         break
     else
         outcome:send(msg:reverse())
     end
 end
 
---print("worker #"..thread.get_id().." ended")
+print("worker #"..thread.id().." ended")

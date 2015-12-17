@@ -6,8 +6,6 @@ local zmq = require "zmq"
 
 --
 
---print("ventillator started")
-
 local ctx = assert(zmq.context())
 
 local sock = assert(ctx:socket(zmq.f.ZMQ_PUSH))
@@ -20,11 +18,11 @@ local workers = {}
 local workers_n = 2
 
 for i=1,workers_n do
-    t, tid = assert(thread.start("test.worker.lua", {}, { "_zmq_ctx" }))
+    t, tid = assert(thread.start("test.worker.lua", {}, { zmq.__get_ctx_mf() }))
     workers[tid] = t
 end
 
-t, tid = assert(thread.start("test.sink.lua", {}, { "_zmq_ctx" }))
+t, tid = assert(thread.start("test.sink.lua", {}, { zmq.__get_ctx_mf() }))
 workers[tid] = t
 
 local n = 0
@@ -35,12 +33,13 @@ while true do
 
     sock:send("task #"..n)
 
-    if n >= 1000000 then
-        for i=1,workers_n do
-            sock:send("kill")
-        end
+    if n >= 10000 then
         break
     end
 end
 
---print("ventillator ended")
+for tid,t in pairs(workers) do
+    sock:send("kill")
+end
+
+print("ventillator end")
