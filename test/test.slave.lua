@@ -1,9 +1,8 @@
 --
 
 local thread = require "thread"
-local trace = require "trace"
 local zmq = require "zmq"
 
 --
 
-print(zmq.context():debug())
+print(thread.id(), zmq.context():debug())
