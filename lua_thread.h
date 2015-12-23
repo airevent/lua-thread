@@ -28,8 +28,6 @@ typedef struct lua_ud_thread {
 
 LUAMOD_API int luaopen_thread( lua_State *L );
 
-//
-
 static int lua_thread_start( lua_State *L );
 static int lua_thread_args( lua_State *L );
 static int lua_thread_id( lua_State *L );
@@ -37,8 +35,6 @@ static int lua_thread_id( lua_State *L );
 static int lua_thread_stop( lua_State *L );
 static int lua_thread_join( lua_State *L );
 static int lua_thread_gc( lua_State *L );
-
-//
 
 static uint64_t inc_id( void );
 static void *lua_thread_create_worker( void *arg );
