@@ -38,7 +38,7 @@ static int lua_thread_gc( lua_State *L );
 
 static uint64_t inc_id( void );
 static void *lua_thread_create_worker( void *arg );
-static void lua_thread_xcopy( lua_State *fromL, lua_State *toL );
+static void lua_thread_xcopy( lua_State *fromL, int fromIndex, lua_State *toL );
 static int lua_thread_atpanic( lua_State *L );
 static int lua_custom_traceback( lua_State *L );
 static int lua_custom_pcall( lua_State *L, int narg, int nres );

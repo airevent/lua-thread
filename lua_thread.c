@@ -41,14 +41,11 @@ static int lua_thread_start( lua_State *L ) {
     lua_pushnumber(thread->L, thread->id);
     lua_setfield(thread->L, LUA_REGISTRYINDEX, LUA_THREAD_ID_METAFIELD);
 
-    // meta args - only flat table with basic types - example - { lol="wtf", asd=123 }
-    lua_newtable(thread->L);
+    // meta args
     if ( lua_istable(L, 2) ) {
-        lua_pushnil(L);
-        while ( lua_next(L, 2) != 0 ) {
-            lua_thread_xcopy(L, thread->L);
-            lua_pop(L, 1);
-        }
+        lua_thread_xcopy(L, 2, thread->L);
+    } else {
+        lua_newtable(thread->L);
     }
     lua_setfield(thread->L, LUA_REGISTRYINDEX, LUA_THREAD_ARGS_METAFIELD);
 
@@ -181,49 +178,35 @@ static int lua_thread_atpanic( lua_State *L ) {
     return 0;
 }
 
-// fromL: arg#-1 - value, arg#-2 - key
-// toL: arg#-1 - table to copy to
-static void lua_thread_xcopy( lua_State *fromL, lua_State *toL ) {
+static void lua_thread_xcopy( lua_State *fromL, int fromIndex, lua_State *toL ) {
+    int type = lua_type(fromL, fromIndex); // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
     const char *str;
     size_t len;
-    int type; // LUA_TNONE, LUA_TNIL, LUA_TNUMBER, LUA_TBOOLEAN, LUA_TSTRING, LUA_TTABLE, LUA_TFUNCTION, LUA_TUSERDATA, LUA_TTHREAD, LUA_TLIGHTUSERDATA
-
-    // copy key
-
-    type = lua_type(fromL, -2);
+    int pos;
 
     if ( type==LUA_TNUMBER ) {
-        lua_pushnumber(toL, lua_tonumber(fromL, -2));
+        lua_pushnumber(toL, lua_tonumber(fromL, fromIndex));
     } else if ( type==LUA_TBOOLEAN ) {
-        lua_pushboolean(toL, -2);
+        lua_pushboolean(toL, lua_toboolean(fromL, fromIndex));
     } else if ( type==LUA_TSTRING ) {
-        str = lua_tolstring(fromL, -2, &len);
+        str = lua_tolstring(fromL, fromIndex, &len);
         lua_pushlstring(toL, str, len);
+    } else if ( type==LUA_TFUNCTION || type==LUA_TUSERDATA || type==LUA_TTHREAD || type==LUA_TLIGHTUSERDATA ) {
+        lua_pushstring(toL, "not supported");
     } else if ( type==LUA_TTABLE ) {
         lua_newtable(toL);
-    } else {
-        return;
+
+        lua_pushnil(fromL);
+        while ( lua_next(fromL, fromIndex) != 0 ) {
+            pos = lua_gettop(fromL);
+            lua_thread_xcopy(fromL, pos-1, toL);
+            lua_thread_xcopy(fromL, pos, toL);
+            lua_settable(toL, -3);
+            lua_pop(fromL, 1);
+        }
+    } else { // LUA_TNONE, LUA_TNIL
+        lua_pushnil(toL);
     }
-
-    // copy value
-
-    type = lua_type(fromL, -1);
-
-    if ( type==LUA_TNUMBER ) {
-        lua_pushnumber(toL, lua_tonumber(fromL, -1));
-    } else if ( type==LUA_TBOOLEAN ) {
-        lua_pushboolean(toL, -1);
-    } else if ( type==LUA_TSTRING ) {
-        str = lua_tolstring(fromL, -1, &len);
-        lua_pushlstring(toL, str, len);
-    } else if ( type==LUA_TTABLE ) {
-        lua_newtable(toL);
-    } else {
-        lua_pop(toL, 1);
-        return;
-    }
-
-    lua_settable(toL, -3);
 }
 
 static int lua_custom_traceback( lua_State *L ) {
