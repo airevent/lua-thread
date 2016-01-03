@@ -3,7 +3,7 @@
 #include <pthread.h>
 
 #include "lua_pd.h"
-#include "lualib.h" // for luaL_openlibs
+#include "lualib.h"
 
 //
 
